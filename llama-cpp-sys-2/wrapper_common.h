@@ -32,6 +32,18 @@ struct llama_rs_chat_template_result {
 
 #include "wrapper_utils.h"
 
+// Per-buffer memory breakdown for a context, flattened into a C struct so
+// it can cross the FFI boundary. The C++ original lives in
+// `src/llama-ext.h` and returns a `std::map<ggml_backend_buffer_type_t, ...>`
+// which bindgen can't represent. `llama_rs_get_memory_breakdown` walks the
+// map and copies each entry into a flat array of these.
+struct llama_rs_mem_entry {
+    char * buft_name;       // owned; freed by llama_rs_mem_entries_free
+    size_t model_bytes;     // bytes allocated for model weights on this buft
+    size_t context_bytes;   // bytes allocated for context (KV cache etc.)
+    size_t compute_bytes;   // bytes allocated for compute scratch buffers
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,6 +80,19 @@ llama_rs_status llama_rs_sampler_accept(struct llama_sampler * sampler, llama_to
 
 void llama_rs_chat_template_result_free(struct llama_rs_chat_template_result * result);
 void llama_rs_string_free(char * ptr);
+
+// Allocates an array of `*out_count` `llama_rs_mem_entry` records describing
+// per-buffer memory use for `ctx`, in the same shape llama.cpp's own
+// `llama_get_memory_breakdown_print` walks. Call `llama_rs_mem_entries_free`
+// to release.
+llama_rs_status llama_rs_get_memory_breakdown(
+    const struct llama_context * ctx,
+    struct llama_rs_mem_entry ** out_entries,
+    size_t * out_count);
+
+void llama_rs_mem_entries_free(
+    struct llama_rs_mem_entry * entries,
+    size_t count);
 
 #ifdef __cplusplus
 }

@@ -166,3 +166,80 @@ extern "C" llama_rs_status llama_rs_sampler_accept(struct llama_sampler * sample
         return LLAMA_RS_STATUS_EXCEPTION;
     }
 }
+
+// -----------------------------------------------------------------------------
+// Memory breakdown
+// -----------------------------------------------------------------------------
+//
+// `llama_get_memory_breakdown` lives in src/llama-ext.h (WIP staging
+// header). It returns a std::map keyed on opaque buffer-type handles, which
+// bindgen can't reflect into Rust. We flatten the map here into an array of
+// {name, model, context, compute} records that crosses the FFI boundary
+// cleanly. Buffer-type names come from ggml_backend_buft_name() ("CPU",
+// "Metal", "CUDA0", etc.).
+
+#include "llama.cpp/src/llama-ext.h"
+#include "llama.cpp/ggml/include/ggml-backend.h"
+
+extern "C" llama_rs_status llama_rs_get_memory_breakdown(
+    const struct llama_context * ctx,
+    struct llama_rs_mem_entry ** out_entries,
+    size_t * out_count) {
+    if (!ctx || !out_entries || !out_count) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_entries = nullptr;
+    *out_count = 0;
+
+    try {
+        const auto breakdown = llama_get_memory_breakdown(ctx);
+        const size_t n = breakdown.size();
+        if (n == 0) {
+            return LLAMA_RS_STATUS_OK;
+        }
+
+        auto * arr = static_cast<llama_rs_mem_entry *>(
+            std::calloc(n, sizeof(llama_rs_mem_entry)));
+        if (!arr) {
+            return LLAMA_RS_STATUS_ALLOCATION_FAILED;
+        }
+
+        size_t i = 0;
+        for (const auto & kv : breakdown) {
+            const char * raw_name = kv.first ? ggml_backend_buft_name(kv.first) : "?";
+            arr[i].buft_name = llama_rs_dup_string(raw_name ? raw_name : "?");
+            if (!arr[i].buft_name) {
+                // free what we managed so far
+                for (size_t j = 0; j < i; ++j) {
+                    std::free(arr[j].buft_name);
+                }
+                std::free(arr);
+                return LLAMA_RS_STATUS_ALLOCATION_FAILED;
+            }
+            arr[i].model_bytes = kv.second.model;
+            arr[i].context_bytes = kv.second.context;
+            arr[i].compute_bytes = kv.second.compute;
+            ++i;
+        }
+
+        *out_entries = arr;
+        *out_count = n;
+        return LLAMA_RS_STATUS_OK;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    } catch (...) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+extern "C" void llama_rs_mem_entries_free(
+    struct llama_rs_mem_entry * entries,
+    size_t count) {
+    if (!entries) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        std::free(entries[i].buft_name);
+    }
+    std::free(entries);
+}

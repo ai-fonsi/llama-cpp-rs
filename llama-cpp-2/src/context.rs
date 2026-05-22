@@ -364,9 +364,13 @@ impl<'model> LlamaContext<'model> {
     }
 
     /// Print a breakdown of per-device memory use to the default logger.
-    pub fn print_memory_breakdown(&self) {
-        unsafe { llama_cpp_sys_2::llama_memory_breakdown_print(self.context.as_ptr()) }
-    }
+    ///
+    /// Upstream llama.cpp dropped the printable C wrapper
+    /// (`llama_memory_breakdown_print`) in favor of `llama_get_memory_breakdown`,
+    /// which returns a `std::map` that cannot cross the FFI boundary cleanly.
+    /// Until the wrapper crate ships an equivalent helper, this is a no-op so
+    /// callers don't break.
+    pub fn print_memory_breakdown(&self) {}
 }
 
 impl Drop for LlamaContext<'_> {

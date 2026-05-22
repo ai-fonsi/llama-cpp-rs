@@ -253,14 +253,18 @@ impl LlamaModelParams {
     /// Appends a buffer type override to the model parameters, to move layers matching pattern to CPU.
     /// It must be pinned as this creates a self-referential struct.
     pub fn add_cpu_buft_override(mut self: Pin<&mut Self>, key: &CStr) {
+        // The vector always ends with a null sentinel that llama.cpp uses to
+        // detect end-of-list; we fill that sentinel and push a fresh one
+        // below. Using `get_mut(0)` here was wrong — after one call, slot 0
+        // is no longer the sentinel and the second call would panic.
         let buft_override = self
             .buft_overrides
-            .get_mut(0)
-            .expect("buft_overrides did not have a next allocated");
+            .last_mut()
+            .expect("buft_overrides must always retain its terminating sentinel");
 
         assert!(
             buft_override.pattern.is_null(),
-            "last buft_override was not empty"
+            "trailing buft_override sentinel was not empty"
         );
 
         // There should be some way to do this without iterating over everything.
@@ -324,60 +328,19 @@ impl LlamaModelParams {
     /// Returns [`FitError::Failure`] if no fitting allocation could be found, or
     /// [`FitError::Error`] on a hard error (e.g. the model file could not be read).
     pub fn fit_params(
-        mut self: Pin<&mut Self>,
-        model_path: &CStr,
-        cparams: &mut LlamaContextParams,
-        margins: &mut [usize],
-        n_ctx_min: u32,
-        log_level: llama_cpp_sys_2::ggml_log_level,
+        self: Pin<&mut Self>,
+        _model_path: &CStr,
+        _cparams: &mut LlamaContextParams,
+        _margins: &mut [usize],
+        _n_ctx_min: u32,
+        _log_level: llama_cpp_sys_2::ggml_log_level,
     ) -> Result<FitResult, FitError> {
-        let max_devices = unsafe { llama_cpp_sys_2::llama_max_devices() };
-        let max_buft = unsafe { llama_cpp_sys_2::llama_max_tensor_buft_overrides() };
-
-        // Allocate tensor_split output buffer.
-        self.tensor_split.clear();
-        self.tensor_split.resize(max_devices, 0.0);
-
-        // Reset and resize buft_overrides for fit output (null-terminated).
-        self.buft_overrides.clear();
-        self.buft_overrides.resize(
-            max_buft + 1,
-            llama_cpp_sys_2::llama_model_tensor_buft_override {
-                pattern: std::ptr::null(),
-                buft: std::ptr::null_mut(),
-            },
-        );
-
-        // Clear pointers before the call — fit writes directly into the buffers above.
-        self.params.tensor_split = null::<f32>();
-        self.params.tensor_buft_overrides = null();
-
-        let status = unsafe {
-            llama_cpp_sys_2::llama_params_fit(
-                model_path.as_ptr(),
-                &raw mut self.params,
-                &raw mut cparams.context_params,
-                self.tensor_split.as_mut_ptr(),
-                self.buft_overrides.as_mut_ptr(),
-                margins.as_mut_ptr(),
-                n_ctx_min,
-                log_level,
-            )
-        };
-
-        match status {
-            llama_cpp_sys_2::LLAMA_PARAMS_FIT_STATUS_SUCCESS => {}
-            llama_cpp_sys_2::LLAMA_PARAMS_FIT_STATUS_FAILURE => return Err(FitError::Failure),
-            _ => return Err(FitError::Error),
-        }
-
-        // Wire the owned buffers into the raw params.
-        self.params.tensor_split = self.tensor_split.as_ptr();
-        self.params.tensor_buft_overrides = self.buft_overrides.as_ptr();
-
-        Ok(FitResult {
-            n_ctx: cparams.context_params.n_ctx,
-        })
+        // Upstream llama.cpp moved `llama_params_fit` out of the public C API
+        // into libcommon as `common_params_fit` (see common/fit.h). Our sys-crate
+        // bindings don't yet expose that, so until they do, this fitter is
+        // unavailable. Callers should set `n_gpu_layers` / `n_ctx` explicitly.
+        let _ = self;
+        Err(FitError::Error)
     }
 }
 

@@ -1014,6 +1014,12 @@ fn main() {
 
     assert_ne!(llama_libs.len(), 0);
 
+    // Upstream llama.cpp renamed the libcommon archive to `libllama-common.a`
+    // (it always sat alongside libllama.a but used a generic name). The new
+    // name is enumerated automatically by `extract_lib_names` over the
+    // install `lib/` directory below, so we no longer need the manual
+    // `cargo:rustc-link-lib=static=common` directive — only the search-path
+    // hint, which is harmless if the directory still exists.
     let common_lib_dir = out_dir.join("build").join("common");
     if common_lib_dir.is_dir() {
         println!(
@@ -1027,7 +1033,6 @@ fn main() {
                 common_profile_dir.display()
             );
         }
-        println!("cargo:rustc-link-lib=static=common");
     }
 
     if cfg!(feature = "system-ggml") {

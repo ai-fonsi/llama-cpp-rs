@@ -195,6 +195,18 @@ impl LlamaModel {
         u32::try_from(n_ctx_train).expect("n_ctx_train fits into an u32")
     }
 
+    /// Sliding-window-attention size for this model, or `0` if the model
+    /// does not use SWA. Models like Gemma 3/4, Phi-3, and Mistral 7B v0.3
+    /// alternate global and local attention layers; the local layers keep
+    /// only the last `n_swa()` positions in the KV cache. Callers doing
+    /// prefix-diff caching must check this against their rewind target.
+    ///
+    /// Wraps `llama_model_n_swa`.
+    #[must_use]
+    pub fn n_swa(&self) -> i32 {
+        unsafe { llama_cpp_sys_2::llama_model_n_swa(self.model.as_ptr()) }
+    }
+
     /// Get all tokens in the model.
     pub fn tokens(
         &self,

@@ -195,4 +195,98 @@ impl LlamaContext<'_> {
         let mem = unsafe { llama_cpp_sys_2::llama_get_memory(self.context.as_ptr()) };
         unsafe { llama_cpp_sys_2::llama_memory_seq_pos_max(mem, seq_id) }
     }
+
+    /// Returns the smallest position present in the KV cache for the specified sequence,
+    /// or `-1` if there is no data in the cache for that sequence.
+    ///
+    /// On a sliding-window-attention (SWA) model this can be greater than zero even
+    /// though earlier tokens were once decoded — they've been evicted from the
+    /// local layers' KV buffer. Callers performing a prefix-diff rewind must
+    /// check `pos_min` against their target rewind position and re-prefill from
+    /// scratch if the target is older than what's still cached.
+    ///
+    /// # Parameters
+    ///
+    /// * `seq_id` - The sequence id to get the min position for
+    #[must_use]
+    pub fn kv_cache_seq_pos_min(&self, seq_id: i32) -> i32 {
+        let mem = unsafe { llama_cpp_sys_2::llama_get_memory(self.context.as_ptr()) };
+        unsafe { llama_cpp_sys_2::llama_memory_seq_pos_min(mem, seq_id) }
+    }
+
+    /// Per-buffer memory breakdown for this context, in bytes. Each entry
+    /// names a buffer type (`"CPU"`, `"Metal"`, `"CUDA0"`, …) and reports
+    /// how much memory the model, context (KV cache), and compute buffers
+    /// each consume on that device. Wraps the C++-only
+    /// `llama_get_memory_breakdown` via a FFI-friendly shim.
+    ///
+    /// Returns an empty `Vec` if the context has no allocated memory yet.
+    /// Logs to debug and returns empty on FFI failure.
+    pub fn memory_breakdown(&self) -> Vec<MemoryBreakdownEntry> {
+        use std::ffi::CStr;
+        let mut entries_ptr: *mut llama_cpp_sys_2::llama_rs_mem_entry =
+            std::ptr::null_mut();
+        let mut count: usize = 0;
+        let rc = unsafe {
+            llama_cpp_sys_2::llama_rs_get_memory_breakdown(
+                self.context.as_ptr(),
+                &mut entries_ptr,
+                &mut count,
+            )
+        };
+        if !crate::status_is_ok(rc) || entries_ptr.is_null() || count == 0 {
+            // Make sure we still free in the rare case the C side allocated
+            // partial output before returning a non-OK status.
+            if !entries_ptr.is_null() {
+                unsafe {
+                    llama_cpp_sys_2::llama_rs_mem_entries_free(entries_ptr, count);
+                }
+            }
+            return Vec::new();
+        }
+        let slice = unsafe { std::slice::from_raw_parts(entries_ptr, count) };
+        let mut out: Vec<MemoryBreakdownEntry> = Vec::with_capacity(count);
+        for entry in slice {
+            let name = if entry.buft_name.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(entry.buft_name) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            out.push(MemoryBreakdownEntry {
+                buft_name: name,
+                model_bytes: entry.model_bytes,
+                context_bytes: entry.context_bytes,
+                compute_bytes: entry.compute_bytes,
+            });
+        }
+        unsafe {
+            llama_cpp_sys_2::llama_rs_mem_entries_free(entries_ptr, count);
+        }
+        out
+    }
+}
+
+/// One row of a context's memory breakdown — what one buffer type
+/// (CPU / Metal / CUDA0 / …) holds for the model, the KV cache, and
+/// compute scratch buffers, in bytes.
+#[derive(Debug, Clone)]
+pub struct MemoryBreakdownEntry {
+    /// Name of the buffer type ("CPU", "Metal", "CUDA0", …).
+    pub buft_name: String,
+    /// Model weights resident on this buffer.
+    pub model_bytes: usize,
+    /// Context allocations (KV cache, embedding output, etc.).
+    pub context_bytes: usize,
+    /// Compute scratch buffers reserved for graph evaluation.
+    pub compute_bytes: usize,
+}
+
+impl MemoryBreakdownEntry {
+    /// Total bytes attributed to this buffer.
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        self.model_bytes + self.context_bytes + self.compute_bytes
+    }
 }

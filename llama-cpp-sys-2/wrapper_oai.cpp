@@ -854,7 +854,38 @@ extern "C" llama_rs_status llama_rs_chat_msg_diff_to_oaicompat_json(
             msg_diff.tool_call_delta.id =
                 diff->tool_call_delta.id ? diff->tool_call_delta.id : "";
         }
-        auto json_delta = common_chat_msg_diff_to_json_oaicompat(msg_diff).dump();
+        // Upstream removed common_chat_msg_diff_to_json_oaicompat from common/chat.cpp;
+        // the equivalent now lives in tools/server/server-chat.cpp as
+        // server_chat_msg_diff_to_json_oaicompat. Inline the body here to keep our
+        // FFI surface stable without depending on server-internal headers.
+        json delta_obj = json::object();
+        if (!msg_diff.reasoning_content_delta.empty()) {
+            delta_obj["reasoning_content"] = msg_diff.reasoning_content_delta;
+        }
+        if (!msg_diff.content_delta.empty()) {
+            delta_obj["content"] = msg_diff.content_delta;
+        }
+        if (msg_diff.tool_call_index != std::string::npos) {
+            json tool_call;
+            tool_call["index"] = msg_diff.tool_call_index;
+            if (!msg_diff.tool_call_delta.id.empty()) {
+                tool_call["id"]   = msg_diff.tool_call_delta.id;
+                tool_call["type"] = "function";
+            }
+            if (!msg_diff.tool_call_delta.name.empty() ||
+                !msg_diff.tool_call_delta.arguments.empty()) {
+                json function = json::object();
+                if (!msg_diff.tool_call_delta.name.empty()) {
+                    function["name"] = msg_diff.tool_call_delta.name;
+                }
+                if (!msg_diff.tool_call_delta.arguments.empty()) {
+                    function["arguments"] = msg_diff.tool_call_delta.arguments;
+                }
+                tool_call["function"] = function;
+            }
+            delta_obj["tool_calls"] = json::array({ tool_call });
+        }
+        auto json_delta = delta_obj.dump();
         *out_json = llama_rs_dup_string(json_delta);
         return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
     } catch (const std::exception &) {
