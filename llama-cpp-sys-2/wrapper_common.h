@@ -94,6 +94,58 @@ void llama_rs_mem_entries_free(
     struct llama_rs_mem_entry * entries,
     size_t count);
 
+// ---- Speculative decoding (Gemma-4 "assistant" drafter / MTP) -------------
+//
+// Thin C-ABI shims over the `common_speculative` C++ framework so an in-process
+// Rust consumer can run the same speculative loop that llama-speculative-simple
+// / llama-server use. `ctx_tgt` is the backbone context, `ctx_dft` the
+// assistant (gemma4-assistant) draft context. The verify+accept loop itself
+// stays on the Rust side (it reuses the normal sampler chain, so grammar /
+// tool-calls keep working); these shims only own the drafter state machine.
+struct common_speculative;
+
+// Build a speculative state machine for the gemma4-assistant drafter.
+// Returns NULL on failure. `n_seq` = number of sequences (1 for the agent).
+struct common_speculative * llama_rs_speculative_init(
+    struct llama_context * ctx_tgt,
+    struct llama_context * ctx_dft,
+    int32_t                n_max,
+    uint32_t               n_seq);
+
+// Seed the drafter with the prompt tokens for a sequence (call once after init).
+void llama_rs_speculative_begin(
+    struct common_speculative * spec,
+    llama_seq_id                seq_id,
+    const llama_token         * prompt,
+    size_t                      n_prompt);
+
+// Feed a just-decoded target batch so the drafter can capture backbone state
+// (h_post_norm + shared K/V). Call right after `llama_decode(ctx_tgt, batch)`.
+bool llama_rs_speculative_process(
+    struct common_speculative * spec,
+    struct llama_batch          batch);
+
+// Generate draft tokens continuing from `id_last` at `n_past`. Writes up to
+// `out_cap` tokens into `out`, returns the count (>=0), or -1 on error.
+int32_t llama_rs_speculative_draft(
+    struct common_speculative * spec,
+    llama_seq_id                seq_id,
+    llama_token                 id_last,
+    int32_t                     n_past,
+    const llama_token         * prompt,
+    size_t                      n_prompt,
+    llama_token               * out,
+    int32_t                     out_cap);
+
+// Notify the drafter how many of its last drafts were accepted (rolls its
+// internal hidden-state seed back to the accepted position).
+void llama_rs_speculative_accept(
+    struct common_speculative * spec,
+    llama_seq_id                seq_id,
+    uint16_t                    n_accepted);
+
+void llama_rs_speculative_free(struct common_speculative * spec);
+
 #ifdef __cplusplus
 }
 #endif

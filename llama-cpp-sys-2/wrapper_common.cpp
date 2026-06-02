@@ -7,8 +7,13 @@
 #include <stdint.h>
 
 #include "llama.cpp/common/json-schema-to-grammar.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/speculative.h"
 #include "llama.cpp/include/llama.h"
 #include "wrapper_utils.h"
+
+#include <algorithm>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -242,4 +247,108 @@ extern "C" void llama_rs_mem_entries_free(
         std::free(entries[i].buft_name);
     }
     std::free(entries);
+}
+
+// ---- Speculative decoding (Gemma-4 assistant drafter) ---------------------
+
+extern "C" struct common_speculative * llama_rs_speculative_init(
+        struct llama_context * ctx_tgt,
+        struct llama_context * ctx_dft,
+        int32_t                n_max,
+        uint32_t               n_seq) {
+    try {
+        common_params_speculative params;
+        params.draft.ctx_tgt = ctx_tgt;
+        params.draft.ctx_dft = ctx_dft;
+        params.draft.n_max   = n_max;
+        // Non-empty path so the "draft model specified" guards pass; init() uses
+        // the provided contexts directly and never re-loads from this path.
+        params.draft.mparams.path = "in-process";
+
+        // Pick the drafter by the draft model's architecture: the Gemma-4
+        // "assistant" (MTP head that shares the backbone's K/V) needs the
+        // specialised impl; any other draft model is a standalone LM that runs
+        // through the generic `draft-simple` speculative path. This keeps the
+        // config generic — passing a non-Gemma drafter Just Works.
+        char arch[64] = {};
+        if (ctx_dft != nullptr) {
+            llama_model_meta_val_str(llama_get_model(ctx_dft),
+                                     "general.architecture", arch, sizeof(arch));
+        }
+        if (std::string(arch) == "gemma4-assistant") {
+            params.types = { COMMON_SPECULATIVE_TYPE_DRAFT_GEMMA4_ASSIST };
+        } else {
+            params.types = { COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE };
+        }
+        return common_speculative_init(params, n_seq);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
+
+extern "C" void llama_rs_speculative_begin(
+        struct common_speculative * spec,
+        llama_seq_id                seq_id,
+        const llama_token         * prompt,
+        size_t                      n_prompt) {
+    if (!spec) {
+        return;
+    }
+    llama_tokens toks(prompt, prompt + n_prompt);
+    common_speculative_begin(spec, seq_id, toks);
+}
+
+extern "C" bool llama_rs_speculative_process(
+        struct common_speculative * spec,
+        struct llama_batch          batch) {
+    if (!spec) {
+        return false;
+    }
+    return common_speculative_process(spec, batch);
+}
+
+extern "C" int32_t llama_rs_speculative_draft(
+        struct common_speculative * spec,
+        llama_seq_id                seq_id,
+        llama_token                 id_last,
+        int32_t                     n_past,
+        const llama_token         * prompt,
+        size_t                      n_prompt,
+        llama_token               * out,
+        int32_t                     out_cap) {
+    if (!spec || !out || out_cap <= 0) {
+        return -1;
+    }
+    try {
+        llama_tokens prompt_toks(prompt, prompt + n_prompt);
+        llama_tokens result;
+        common_speculative_get_draft_params(spec, seq_id) = {
+            /* .drafting = */ true,
+            /* .n_max    = */ -1,
+            /* .n_past   = */ n_past,
+            /* .id_last  = */ id_last,
+            /* .prompt   = */ &prompt_toks,
+            /* .result   = */ &result,
+        };
+        common_speculative_draft(spec);
+        const int32_t n = (int32_t) std::min((size_t) out_cap, result.size());
+        std::copy_n(result.begin(), n, out);
+        return n;
+    } catch (const std::exception &) {
+        return -1;
+    }
+}
+
+extern "C" void llama_rs_speculative_accept(
+        struct common_speculative * spec,
+        llama_seq_id                seq_id,
+        uint16_t                    n_accepted) {
+    if (!spec) {
+        return;
+    }
+    common_speculative_accept(spec, seq_id, n_accepted);
+}
+
+extern "C" void llama_rs_speculative_free(struct common_speculative * spec) {
+    common_speculative_free(spec);
 }
