@@ -38,6 +38,36 @@ impl LlamaSampler {
         data_array.apply_sampler(self);
     }
 
+    /// Jump-forward decoding: the maximal run of characters this sampler's
+    /// grammar forces next from its current state, returned as a `String`.
+    ///
+    /// A grammar position is "forced" when every parse stack agrees on a single
+    /// next code point and stopping (end-of-generation) is not allowed there.
+    /// Returns an empty string for non-grammar samplers, while a lazy grammar is
+    /// still awaiting its trigger, or whenever the next character is a genuine
+    /// choice. Non-mutating — the sampler's grammar state is untouched.
+    ///
+    /// `max_bytes` caps the returned UTF-8 length.
+    #[must_use]
+    pub fn grammar_forced_string(&self, max_bytes: usize) -> String {
+        if max_bytes == 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; max_bytes];
+        let n = unsafe {
+            llama_cpp_sys_2::llama_sampler_grammar_forced_string(
+                self.sampler as *const _,
+                buf.as_mut_ptr().cast::<c_char>(),
+                max_bytes,
+            )
+        };
+        if n <= 0 {
+            return String::new();
+        }
+        buf.truncate(n as usize);
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
     /// Accepts a token from the sampler, possibly updating the internal state of certain samplers
     /// (e.g. grammar, repetition, etc.)
     pub fn accept(&mut self, token: LlamaToken) {
